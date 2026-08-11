@@ -7479,12 +7479,15 @@ describe('connectPanePty', () => {
     expect(resolveMockPaneWindowsShiftEnterEncoding(mockStoreState, paneKey)).toBe('csi-u')
   })
 
-  it('retires pane launch routing after one fresh scan confirms shell', async () => {
+  it('retires completed pane agent recovery after one fresh scan confirms shell', async () => {
     vi.useFakeTimers()
     const { connectPanePty } = await import('./pty-connection')
-    vi.mocked(window.api.pty.confirmForegroundProcess).mockResolvedValue('powershell.exe')
+    vi.mocked(window.api.pty.confirmForegroundProcess)
+      .mockResolvedValueOnce('droid')
+      .mockResolvedValue('powershell.exe')
     const dataCallbackRef: { current: ((data: string) => void) | null } = { current: null }
     const ptyId = 'pty-droid-confirmed-shell'
+    const pane = createPane(1)
     const transport = createMockTransport(ptyId)
     transport.connect.mockImplementation(async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
       dataCallbackRef.current = callbacks.onData ?? null
@@ -7494,23 +7497,28 @@ describe('connectPanePty', () => {
     const paneKey = makePaneKey('tab-1', LEAF_1)
 
     connectPanePty(
-      createPane(1) as never,
+      pane as never,
       createManager(1) as never,
       createDeps({ isVisibleRef: { current: false } }) as never
     )
     await vi.advanceTimersByTimeAsync(20)
     await flushAsyncTicks()
-    mockStoreState.agentLaunchConfigByPaneKey[paneKey] = {
-      launchConfig: { agentArgs: '', agentEnv: {} },
-      identity: { agentType: 'droid' }
-    }
-    mockStoreState.clearAgentLaunchConfig.mockImplementation((key: string) => {
-      delete mockStoreState.agentLaunchConfigByPaneKey[key]
+
+    sendTerminalInputThroughPane(pane, 'droid\r')
+    dataCallbackRef.current?.('\x1b]133;C\x07')
+    await vi.advanceTimersByTimeAsync(350)
+    expect(mockStoreState.paneForegroundAgentByPaneKey[paneKey]).toEqual({
+      agent: 'droid',
+      routingTrusted: true,
+      shellForeground: false
     })
+
+    mockStoreState.sleepingAgentSessionsByPaneKey[paneKey] = { agent: 'droid' }
+    expect(mockStoreState.agentLaunchConfigByPaneKey[paneKey]).toBeUndefined()
 
     dataCallbackRef.current?.('\x1b]133;D;0\x07')
     await vi.advanceTimersByTimeAsync(350)
-    expect(mockStoreState.clearAgentLaunchConfig).toHaveBeenCalledExactlyOnceWith(paneKey)
+    expect(mockStoreState.sleepingAgentSessionsByPaneKey[paneKey]).toBeUndefined()
     expect(mockStoreState.paneForegroundAgentByPaneKey[paneKey]).toEqual({
       agent: null,
       shellForeground: true
